@@ -1,5 +1,4 @@
 # Crane Game
-====================
 If you know, you know.
 
 ## To try out the latest build
