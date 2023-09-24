@@ -2,7 +2,7 @@
 If you know, you know.
 
 ## To try out the latest build
-[https://snareshops.github.io/crane-game](https://snareshops.github.io/crane-game)
+[https://snarechops.github.io/crane-game](https://snarechops.github.io/crane-game)
 
 ## To work on or develop
 - No dependencies to install
