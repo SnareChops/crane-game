@@ -46,6 +46,7 @@ export class Model {
     }
 
     async SetPos(x: number, y: number, rotation: number, size: number, time: number = 0, relative: boolean = false) {
+        console.log('Setting model position to:', x, y, rotation, size);
         await this.vts.request<{}>(VTSMessageType.MoveModelRequest, {
             timeInSeconds: time,
             valuesAreRelativeToModel: relative,

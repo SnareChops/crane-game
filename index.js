@@ -22,63 +22,13 @@
     }
   };
 
-  // core/renderer.ts
-  var Renderer = class {
-    background = [];
-    effects = [];
-    screen = [];
-    addToBackground(sprite) {
-      if (this.background.includes(sprite))
-        return;
-      this.screen.push(sprite);
-    }
-    removeFromBackground(sprite) {
-      const i = this.background.indexOf(sprite);
-      if (i > -1)
-        this.background.splice(i, 1);
-    }
-    addEffect(effect) {
-      if (this.effects.includes(effect))
-        return;
-      this.effects.push(effect);
-    }
-    removeEffect(effect) {
-      const i = this.effects.indexOf(effect);
-      if (i > -1)
-        this.effects.splice(i, 1);
-    }
-    addToScreen(sprite) {
-      if (this.screen.includes(sprite))
-        return;
-      this.screen.push(sprite);
-    }
-    removeFromScreen(sprite) {
-      const i = this.screen.indexOf(sprite);
-      if (i > -1)
-        this.screen.splice(i, 1);
-    }
-    draw(ctx2) {
-      for (let effect of this.effects) {
-        for (let particle of effect.particles) {
-          const image = particle.Image();
-          if (!!image) {
-            ctx2.drawImage(image, ...particle.bounds.rawPos());
-          }
-        }
-      }
-      this.screen.sort((a, b) => {
-        const [ax, ay, az] = a.vector.vec3();
-        const [bx, by, bz] = b.vector.vec3();
-        return az - bz;
-      });
-      for (const item of this.screen) {
-        const image = item.Image();
-        if (!!image) {
-          ctx2.drawImage(image, ...item.rawPos());
-        }
-      }
-    }
-  };
+  // core/trig.ts
+  function lerp(x1, y1, x2, y2, percent) {
+    return [x1 + (x2 - x1) * percent, y1 + (y2 - y1) * percent];
+  }
+  function linearInterpolate(a, b, percent) {
+    return a + (b - a) * percent;
+  }
 
   // core/util.ts
   function isSet(mask, state) {
@@ -90,6 +40,21 @@
     canvas.height = h;
     return [canvas, canvas.getContext("2d")];
   }
+
+  // src/config.ts
+  var config = {
+    SCREEN_WIDTH: 1920,
+    SCREEN_HEIGHT: 1080,
+    MODEL_HEIGHT_OFFSET: 0.6,
+    MOVE_TO_DURATION: 5e3,
+    LOWERING_DURATION: 2e3,
+    GRABBING_DURATION: 1e3,
+    RAISING_DURATION: 2e3,
+    MOVE_BACK_DURATION: 8e3,
+    DROPPING_DURATION: 200,
+    FALLING_DURATION: 500,
+    RESTING_DURATION: 3e3
+  };
 
   // core/vector.ts
   var RawVector = class {
@@ -269,17 +234,45 @@
   // src/crane.ts
   var CraneSprite = class extends RawBounds {
     image;
+    top;
+    left;
+    right;
+    closePercent = 0;
     constructor() {
       super(100, 100);
-      const [canvas, context] = createCanvas(...this.size());
-      context.fillStyle = "red";
-      context.fillRect(0, 0, 10, 100);
-      context.fillRect(90, 0, 10, 100);
-      context.fillRect(0, 0, 100, 10);
-      this.image = canvas;
+      this.setAnchor(CENTER, BOTTOM);
+      this.image = createCanvas(...this.size());
+      const [topCanvas, topContext] = createCanvas(100, 10);
+      topContext.fillStyle = "red";
+      topContext.fillRect(0, 0, 100, 10);
+      this.top = topCanvas;
+      const [leftCanvas, leftContext] = createCanvas(10, 100);
+      leftContext.fillStyle = "red";
+      leftContext.fillRect(0, 0, 10, 100);
+      this.left = leftCanvas;
+      this.right = leftCanvas;
+      this.render();
+    }
+    close(percent) {
+      this.closePercent = percent;
+      this.render();
+    }
+    open(percent) {
+      this.closePercent = 1 - percent;
+      this.render();
+    }
+    render() {
+      this.image[1].reset();
+      this.image[1].drawImage(this.top, 0, 0);
+      this.image[1].rotate(linearInterpolate(0, 7 * Math.PI / 4, this.closePercent));
+      this.image[1].drawImage(this.left, 0, 0);
+      this.image[1].resetTransform();
+      this.image[1].rotate(linearInterpolate(0, Math.PI / 4, this.closePercent));
+      this.image[1].drawImage(this.right, 90, 0);
+      this.image[1].resetTransform();
     }
     Image() {
-      return this.image;
+      return this.image[0];
     }
   };
 
@@ -355,6 +348,7 @@
       ];
     }
     async SetPos(x, y, rotation, size, time = 0, relative = false) {
+      console.log("Setting model position to:", x, y, rotation, size);
       await this.vts.request("MoveModelRequest" /* MoveModelRequest */, {
         timeInSeconds: time,
         valuesAreRelativeToModel: relative,
@@ -366,48 +360,156 @@
     }
   };
 
+  // src/util.ts
+  function screenToVTSCoords(sx, sy) {
+    return [
+      linearInterpolate(-1, 1, sx / config.SCREEN_WIDTH),
+      linearInterpolate(1, -1, sy / config.SCREEN_HEIGHT)
+    ];
+  }
+  function vtsToScreenCoords(vx, vy) {
+    return [
+      linearInterpolate(0, 1920, (vx + 1) / 2),
+      linearInterpolate(1080, 0, (vy + 1) / 2)
+    ];
+  }
+
   // src/scene.ts
   var CraneScene = class {
-    renderer = new Renderer();
     crane = new CraneSprite();
     state = 2 /* IDLE */;
+    prev = 2 /* IDLE */;
     vts = new VTS();
     model;
     savedPos = [0, 0, 0, 0];
+    canvasPos = [0, 0];
     cooldown = 2e3;
     constructor() {
-      this.renderer.addToScreen(this.crane);
+      this.crane.vector.setVec2(100, 100);
       this.model = new Model(this.vts);
       this.vts.onOpen(async () => {
         await this.vts.authorize();
         this.savedPos = await this.model.Pos();
-        console.log(this.savedPos);
+        this.canvasPos = vtsToScreenCoords(this.savedPos[0], this.savedPos[1] + config.MODEL_HEIGHT_OFFSET);
+        console.log(this.canvasPos);
+        console.log(this.savedPos, this.canvasPos);
       });
+      setTimeout(() => this.trigger(), 2e3);
+    }
+    trigger() {
+      if (!isSet(this.state, 2 /* IDLE */))
+        return;
+      this.cooldown = config.MOVE_TO_DURATION;
+      this.state = 8 /* MOVETO */ | 4 /* ACTIVE */;
     }
     update(delta) {
-      if (isSet(this.state, 2 /* IDLE */)) {
-        this.cooldown -= delta;
-        if (this.cooldown <= 0) {
-          this.state = 4 /* ACTIVE */;
-          this.cooldown = 2e3;
-          const [x, y, r, s] = this.savedPos;
-          console.log("centering");
-          this.model.SetPos(0, 0, 0, s);
-        }
+      if (isSet(this.state, 8 /* MOVETO */))
+        this.moveToUpdate(delta);
+      if (isSet(this.state, 16 /* LOWERING */))
+        this.loweringUpdate(delta);
+      if (isSet(this.state, 32 /* GRABBING */))
+        this.grabbingUpdate(delta);
+      if (isSet(this.state, 64 /* RAISING */))
+        this.raisingUpdate(delta);
+      if (isSet(this.state, 128 /* MOVEBACK */))
+        this.moveBackUpdate(delta);
+      if (isSet(this.state, 256 /* DROPPING */))
+        this.droppingUpdate(delta);
+      if (isSet(this.state, 512 /* FALLING */))
+        this.fallingUpdate(delta);
+      if (isSet(this.state, 1024 /* RESTING */))
+        this.restingUpdate(delta);
+    }
+    moveToUpdate(delta) {
+      this.cooldown -= delta;
+      if (this.cooldown <= 0) {
+        this.cooldown = config.LOWERING_DURATION + this.cooldown;
+        this.state = 16 /* LOWERING */ | 4 /* ACTIVE */;
         return;
       }
-      if (isSet(this.state, 4 /* ACTIVE */)) {
-        this.cooldown -= delta;
-        if (this.cooldown <= 0) {
-          this.state = 2 /* IDLE */;
-          this.cooldown = 2e3;
-          console.log("resetting");
-          this.model.SetPos(...this.savedPos);
-        }
+      this.prev = 8 /* MOVETO */;
+      const percent = 1 - this.cooldown / config.MOVE_TO_DURATION;
+      this.crane.vector.setVec2(...lerp(100, 100, this.canvasPos[0], 100, percent));
+    }
+    loweringUpdate(delta) {
+      this.cooldown -= delta;
+      if (this.cooldown <= 0) {
+        this.cooldown = config.GRABBING_DURATION + this.cooldown;
+        this.state = 32 /* GRABBING */ | 4 /* ACTIVE */;
+        return;
+      }
+      this.prev = 16 /* LOWERING */;
+      const percent = 1 - this.cooldown / config.LOWERING_DURATION;
+      this.crane.vector.setVec2(...lerp(this.canvasPos[0], 100, ...this.canvasPos, percent));
+    }
+    grabbingUpdate(delta) {
+      this.cooldown -= delta;
+      if (this.cooldown <= 0) {
+        this.cooldown = config.RAISING_DURATION + this.cooldown;
+        this.state = 64 /* RAISING */ | 4 /* ACTIVE */;
+        return;
+      }
+      this.prev = 32 /* GRABBING */;
+      this.crane.close(1 - this.cooldown / config.GRABBING_DURATION);
+    }
+    raisingUpdate(delta) {
+      this.cooldown -= delta;
+      if (this.cooldown <= 0) {
+        this.cooldown = config.MOVE_BACK_DURATION + this.cooldown;
+        this.state = 128 /* MOVEBACK */ | 4 /* ACTIVE */;
+        return;
+      }
+      this.prev = 64 /* RAISING */;
+      const percent = 1 - this.cooldown / config.RAISING_DURATION;
+      this.crane.vector.setVec2(...lerp(...this.canvasPos, this.canvasPos[0], 100, percent));
+      const [x, y] = screenToVTSCoords(0, linearInterpolate(this.canvasPos[1], 100, percent));
+      this.model.SetPos(this.savedPos[0], y - config.MODEL_HEIGHT_OFFSET, this.savedPos[2], this.savedPos[3]);
+    }
+    moveBackUpdate(delta) {
+      this.cooldown -= delta;
+      if (this.cooldown <= 0) {
+        this.cooldown = config.DROPPING_DURATION + this.cooldown;
+        this.state = 256 /* DROPPING */ | 4 /* ACTIVE */;
+        return;
+      }
+      this.prev = 128 /* MOVEBACK */;
+      const percent = 1 - this.cooldown / config.MOVE_BACK_DURATION;
+      this.crane.vector.setVec2(...lerp(this.canvasPos[0], 100, 100, 100, percent));
+      const [x, y] = screenToVTSCoords(...this.crane.vector.vec2());
+      this.model.SetPos(x, y - config.MODEL_HEIGHT_OFFSET, this.savedPos[2], this.savedPos[3]);
+    }
+    droppingUpdate(delta) {
+      this.cooldown -= delta;
+      if (this.cooldown <= 0) {
+        this.cooldown = config.FALLING_DURATION + this.cooldown;
+        this.state = 512 /* FALLING */ | 4 /* ACTIVE */;
+        return;
+      }
+      this.prev = 256 /* DROPPING */;
+      this.crane.open(1 - this.cooldown / config.DROPPING_DURATION);
+    }
+    fallingUpdate(delta) {
+      this.cooldown -= delta;
+      if (this.cooldown <= 0) {
+        this.cooldown = config.RESTING_DURATION + this.cooldown;
+        this.state = 1024 /* RESTING */ | 4 /* ACTIVE */;
+        return;
+      }
+      if (this.prev != 512 /* FALLING */) {
+        const [x, y] = screenToVTSCoords(...this.crane.vector.vec2());
+        this.model.SetPos(x, -2, this.savedPos[2], this.savedPos[3], 0.5);
+      }
+      this.prev = 512 /* FALLING */;
+    }
+    restingUpdate(delta) {
+      this.cooldown -= delta;
+      if (this.cooldown <= 0) {
+        this.state = 2 /* IDLE */;
+        this.model.SetPos(...this.savedPos);
       }
     }
     draw(screen) {
-      this.renderer.draw(screen);
+      screen.drawImage(this.crane.Image(), ...this.crane.rawPos());
     }
   };
 
